@@ -1,0 +1,10 @@
+../Core/Src/main.c:72:5:main	1
+../Core/Src/main.c:122:6:SystemClock_Config	3
+../Core/Src/main.c:168:13:MX_TIM3_Init	7
+../Core/Src/main.c:231:13:MX_USART2_UART_Init	2
+../Core/Src/main.c:264:13:MX_GPIO_Init	1
+../Core/Src/main.c:299:5:uart2_write	2
+../Core/Src/main.c:307:5:__io_putchar	1
+../Core/Src/main.c:312:13:ESC_SetPulse	3
+../Core/Src/main.c:320:13:ESC_Calibrate	2
+../Core/Src/main.c:360:6:Error_Handler	1
