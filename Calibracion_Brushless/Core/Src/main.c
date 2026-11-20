@@ -18,15 +18,22 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+#include "cmsis_os.h"
 
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include <stdio.h>
+#include "FreeRTOS.h"
+#include "task.h"
+#include "queue.h"
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
 /* USER CODE BEGIN PTD */
-
+typedef struct
+{
+	int adc[2];
+}ADC_data_t;
 /* USER CODE END PTD */
 
 /* Private define ------------------------------------------------------------*/
@@ -36,7 +43,8 @@
 
 /* Private macro -------------------------------------------------------------*/
 /* USER CODE BEGIN PM */
-
+#define PWM_MIN 1000
+#define PWM_MAX 2000
 /* USER CODE END PM */
 
 /* Private variables ---------------------------------------------------------*/
@@ -46,7 +54,15 @@ TIM_HandleTypeDef htim3;
 
 UART_HandleTypeDef huart2;
 
+/* Definitions for defaultTask */
+osThreadId_t defaultTaskHandle;
+const osThreadAttr_t defaultTask_attributes = {
+  .name = "defaultTask",
+  .stack_size = 128 * 4,
+  .priority = (osPriority_t) osPriorityNormal,
+};
 /* USER CODE BEGIN PV */
+QueueHandle_t cola = NULL;
 /* USER CODE END PV */
 
 /* Private function prototypes -----------------------------------------------*/
@@ -55,17 +71,19 @@ static void MX_GPIO_Init(void);
 static void MX_USART2_UART_Init(void);
 static void MX_ADC1_Init(void);
 static void MX_TIM3_Init(void);
+void StartDefaultTask(void *argument);
+
 /* USER CODE BEGIN PFP */
 int __io_putchar(int ch);
 int uart2_write(int ch);
-static void ADC_Read2Blocking(int *);
-void ADC_2_PWM(int *adc_val);
+static void ADC_Read2Blocking(void *arg);
+void ADC_2_PWM(void *arg);
 void map(int entrada, int *salida, int min_in, int max_in, int min_out, int max_out);
 /* USER CODE END PFP */
 
 /* Private user code ---------------------------------------------------------*/
 /* USER CODE BEGIN 0 */
-int adc_val[2];
+
 /* USER CODE END 0 */
 
 /**
@@ -104,6 +122,45 @@ int main(void)
   HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_2);
   /* USER CODE END 2 */
 
+  /* Init scheduler */
+  osKernelInitialize();
+
+  /* USER CODE BEGIN RTOS_MUTEX */
+  /* add mutexes, ... */
+  /* USER CODE END RTOS_MUTEX */
+
+  /* USER CODE BEGIN RTOS_SEMAPHORES */
+  /* add semaphores, ... */
+  /* USER CODE END RTOS_SEMAPHORES */
+
+  /* USER CODE BEGIN RTOS_TIMERS */
+  /* start timers, add new ones, ... */
+  /* USER CODE END RTOS_TIMERS */
+
+  /* USER CODE BEGIN RTOS_QUEUES */
+  /* add queues, ... */
+  cola = xQueueCreate(1, sizeof(ADC_data_t));
+  /* USER CODE END RTOS_QUEUES */
+
+  /* Create the thread(s) */
+  /* creation of defaultTask */
+  defaultTaskHandle = osThreadNew(StartDefaultTask, NULL, &defaultTask_attributes);
+
+  xTaskCreate(ADC_Read2Blocking, "Lectura ADC", 128, NULL, 1, NULL);
+  xTaskCreate(ADC_2_PWM, "PWM", 128, NULL, 1, NULL);
+  /* USER CODE BEGIN RTOS_THREADS */
+  /* add threads, ... */
+  /* USER CODE END RTOS_THREADS */
+
+  /* USER CODE BEGIN RTOS_EVENTS */
+  /* add events, ... */
+  /* USER CODE END RTOS_EVENTS */
+
+  /* Start scheduler */
+  osKernelStart();
+
+  /* We should never get here as control is now taken by the scheduler */
+
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
@@ -111,12 +168,11 @@ int main(void)
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
-	  ADC_Read2Blocking(adc_val);
 	  //printf("A0=%d\tA1=%d \n\r", adc_val[0], adc_val[1]);
-	  ADC_2_PWM(adc_val);
+
 	  //ADC A0 modifica Pwm PA6
 	  //ADC A1 modifica Pwm PA7
-	  HAL_Delay(100);
+
   }
   /* USER CODE END 3 */
 }
@@ -363,20 +419,26 @@ static void MX_GPIO_Init(void)
 }
 
 /* USER CODE BEGIN 4 */
-static void ADC_Read2Blocking(int *adc)
+static void ADC_Read2Blocking(void *arg)
 {
-  // 1) Arranca UNA secuencia (3 conversiones)
-  HAL_ADC_Start(&hadc1);
+	ADC_data_t data;
+	for(;;)
+	{
+		  // 1) Arranca UNA secuencia (2 conversiones)
+		  HAL_ADC_Start(&hadc1);
 
-  // 2) Lee Rank 1
-  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY); //se queda esperando por un valor en el canal 1
-  adc[0] = HAL_ADC_GetValue(&hadc1); //lee el valor del canal 1
+		  // 2) Lee Rank 1
+		  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY); //se queda esperando por un valor en el canal 1
+		  data.adc[0] = HAL_ADC_GetValue(&hadc1); //lee el valor del canal 1
 
-  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);// ahora para el canal 2
-  adc[1] = HAL_ADC_GetValue(&hadc1);
+		  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);// ahora para el canal 2
+		  data.adc[1] = HAL_ADC_GetValue(&hadc1);
 
-  // 5) Detén el ADC (opcional)
-  HAL_ADC_Stop(&hadc1);
+		  // 5) Detén el ADC (opcional)
+		  HAL_ADC_Stop(&hadc1);
+		  xQueueOverwrite(cola, &data);
+		  vTaskDelay(pdMS_TO_TICKS(50));
+	}
 }
 int uart2_write(int ch){
 /*Make sure the transmit data register is empty*/
@@ -389,21 +451,48 @@ int __io_putchar(int ch){
 	uart2_write(ch);
 	return ch;
 }
-void ADC_2_PWM(int *adc_val)
+void ADC_2_PWM(void *arg)
 {
 	int pwm = 0;
+	ADC_data_t data;
+	for(;;)
+	{
+		xQueueReceive(cola, &data, portMAX_DELAY);
 
-	map(adc_val[0], &pwm, 0, 4095, 0, 20000-1);
-	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
+		map(data.adc[0], &pwm, 0, 4095, PWM_MIN, PWM_MAX);
+		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
 
-	map(adc_val[1], &pwm, 0, 4095, 0, 20000-1);
-	__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pwm);
+		map(data.adc[1], &pwm, 0, 4095, PWM_MIN, PWM_MAX);
+		__HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_2, pwm);
+
+		printf("PWM = %d\n\r", pwm);
+
+		vTaskDelay(pdMS_TO_TICKS(100));
+	}
 }
 void map(int entrada, int *salida, int min_in, int max_in, int min_out, int max_out)
 {
 	*salida = (int)( (entrada - min_in) * (max_out - min_out) / (max_in - min_in) + min_out );
 }
 /* USER CODE END 4 */
+
+/* USER CODE BEGIN Header_StartDefaultTask */
+/**
+  * @brief  Function implementing the defaultTask thread.
+  * @param  argument: Not used
+  * @retval None
+  */
+/* USER CODE END Header_StartDefaultTask */
+void StartDefaultTask(void *argument)
+{
+  /* USER CODE BEGIN 5 */
+  /* Infinite loop */
+  for(;;)
+  {
+    osDelay(1);
+  }
+  /* USER CODE END 5 */
+}
 
 /**
   * @brief  This function is executed in case of error occurrence.
